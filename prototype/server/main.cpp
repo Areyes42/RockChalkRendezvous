@@ -3,25 +3,27 @@
 #include <fstream>
 #include <cstdio>
 #include <vector>
+#include <sstream>
 #include <thread>
 #include "httplib.h"
 
-#include "../timeanddate.hpp"
-//#include "../calendar.hpp"
-#include "../networking.hpp"
+#include "../common_utils.hpp"
 #include "../data_codecs.hpp"
+#include "../group.hpp"
+#include "../calendar.hpp"
+#include "../user.hpp"
+#include "../networking.hpp"
 
 using namespace httplib;
 
 
-#define SERVER_PORT 8080
+#define CONFIG_FILE_NAME "config.txt"
 #define GROUPS_FILE_NAME "groups.txt"
 #define USER_FOLDER_PATH(a) ("users/" + a + ".txt")
 
 
 
 #define return_code(a) return response.set_content(std::string(1, static_cast<char>(a)), "text/plain")
-
 
 
 
@@ -43,8 +45,8 @@ LoginResult login(std::istream& message) {
 	if (!user_file.is_open()) return { Failure, IncorrectLogin };
 	
 	User user;
-	if (User::decode(user_file, user) == Failure) {
-		printf("Couldn't look up password for '%s', user data is improperly formatted.", username.c_str());
+	if (user.decode(user_file) == Failure) {
+		printf("Couldn't read password for '%s', user data file is improperly formatted.\n", username.c_str());
 		return { Failure, IncorrectLogin, user };
 	}
 	if (password != user.password) return { Failure, IncorrectLogin, user };
@@ -59,13 +61,15 @@ ServerResponse create_account(std::istream& message) {
 	if (read_quoted_string(message, username) == Failure) return BadData;
 	if (read_quoted_string(message, password) == Failure) return BadData;
 	
+	if (!is_username_valid(username)) return UsernameUnavailable;
+	
 	let test_user_file = std::ifstream(USER_FOLDER_PATH(username));
 	if (test_user_file.is_open()) {
 		test_user_file.close();
 		return UsernameUnavailable;
 	}
 	
-	// todo: username and password screening
+	// todo: password screening
 	// InvalidPassword unused otherwise
 	
 	(std::ofstream(USER_FOLDER_PATH(username)) << User(username, password).encode()).close();
@@ -77,6 +81,31 @@ inline void save_user_file(const User& user) {
 	(std::ofstream(USER_FOLDER_PATH(user.username)) << user.encode()).close();
 }
 
+
+// Does not save the user's file after removing the group entry
+// Fails if the user already has no affiliation with the group
+Status leave_group(std::unordered_map<GroupID, Group>& groups, User& user, const GroupID& id) {
+	auto group_id_ptr = std::find(user.group_ids.begin(), user.group_ids.end(), id);
+	if (group_id_ptr == user.group_ids.end()) return Failure;
+	user.group_ids.erase(group_id_ptr);
+	
+	auto pair_ptr = groups.find(id);
+	if (pair_ptr == groups.end()) {
+		printf("User '%s' had reference to missing group %s\n", user.username.c_str(), encode_group_id(id).c_str());
+		return Success;
+	}
+	
+	auto member_ptr = std::find(pair_ptr->second.members.begin(), pair_ptr->second.members.end(), user.username);
+	if (member_ptr == pair_ptr->second.members.end()) {
+		printf("Group %s was missing reference to user '%s'\n", encode_group_id(id).c_str(), user.username.c_str());
+		return Success;
+	}
+	pair_ptr->second.members.erase(member_ptr);
+	
+	if (pair_ptr->second.members.size() == 0) groups.erase(id);
+	
+	return Success;
+}
 
 
 
@@ -93,9 +122,13 @@ int main() {
 	
 	while (groups_file_in.good()) {
 		Group group;
-		if (Group::decode(groups_file_in, group) == Failure) break;
+		if (group.decode(groups_file_in) == Failure) break;
+		if (group.members.size() == 0) {
+			printf("Group %s had no members\n", encode_group_id(group.id).c_str());
+			continue;
+		}
 		if (groups.try_emplace(group.id, group).second == false) {
-			printf("Duplicate group id from '%s'\n", group.name.c_str());
+			printf("Duplicate group id %s from '%s'\n", encode_group_id(group.id).c_str(), group.name.c_str());
 		}
 	}
 	
@@ -123,7 +156,7 @@ int main() {
 		std::string username;
 		if (read_quoted_string(message, username) == Failure) return_code(BadData);
 		
-		// todo: username screening
+		if (!is_username_valid(username)) return_code(UsernameUnavailable);
 		
 		let test_user_file = std::ifstream(USER_FOLDER_PATH(username));
 		if (test_user_file.is_open()) {
@@ -149,16 +182,7 @@ int main() {
 		LoginResult r = login(message);
 		if (r.status == Failure) return_code(r.code);
 		
-		for (GroupID id : r.user.group_ids) {
-			auto pair_ptr = groups.find(id);
-			if (pair_ptr == groups.end()) {
-				printf("User '%s' had reference to missing group '%s'\n", r.user.username.c_str(), encode_group_id(id).c_str());
-				continue;
-			}
-			std::vector<std::string> members = pair_ptr->second.members;
-			members.erase(std::find(members.begin(), members.end(), r.user.username));
-		}
-		
+		for (GroupID id : r.user.group_ids) leave_group(groups, r.user, id);
 		std::remove(USER_FOLDER_PATH(r.user.username).c_str());
 		return_code(AccountDeleted);
 	});
@@ -183,7 +207,7 @@ int main() {
 		if (r.status == Failure) return_code(r.code);
 		
 		Calendar calendar;
-		if (Calendar::decode(message, calendar) == Failure) return_code(BadData);
+		if (calendar.decode(message) == Failure) return_code(BadData);
 		
 		r.user.calendar = calendar;
 		save_user_file(r.user);
@@ -241,20 +265,20 @@ int main() {
 		
 		// format and send
 		Group group = pair_ptr->second;
-		std::string calendar_data = encode_vector<std::string>(group.members, [&](std::string username) -> std::string {
+		std::string calendar_data = encode_vector<std::string>(group.members, [&](const std::string& username) -> std::string {
 			let user_file = std::ifstream(USER_FOLDER_PATH(username));
 			if (!user_file.is_open()) {
 				printf("Reference to missing user '%s' in group '%s'\n", username.c_str(), group.name.c_str());
 				return "";
 			}
 			User user;
-			if (User::decode(user_file, user) == Failure) {
-				printf("Couldn't read calendar of user '%s', data file is improperly formatted.\n", username.c_str());
-				return "\n" + quote_string(username) + " " + Calendar().encode();
+			if (user.decode(user_file) == Failure) {
+				printf("Couldn't read calendar of user '%s', user data file is improperly formatted.\n", username.c_str());
+				user.calendar = Calendar();
 			}
 			
 			return "\n" + quote_string(username) + " " + user.calendar.encode();
-		}, true);
+		}, false);
 		
 		response.set_content(std::string(1, static_cast<char>(GroupCalendars)) + "\n" + calendar_data, "text/plain");
 	});
@@ -328,11 +352,9 @@ int main() {
 		LoginResult r = login(message);
 		if (r.status == Failure) return_code(r.code);
 		
-		// read group id
 		GroupID id;
 		if (decode_group_id(message, id) == Failure) return_code(BadData);
 		
-		// read name
 		std::string name;
 		if (read_quoted_string(message, name) == Failure) return_code(BadData);
 		
@@ -365,38 +387,36 @@ int main() {
 		LoginResult r = login(message);
 		if (r.status == Failure) return_code(r.code);
 		
-		// read group id
 		GroupID id;
 		if (decode_group_id(message, id) == Failure) return_code(BadData);
 		
-		auto group_id_ptr = std::find(r.user.group_ids.begin(), r.user.group_ids.end(), id);
-		if (group_id_ptr == r.user.group_ids.end()) return_code(InvalidGroup);
-		r.user.group_ids.erase(group_id_ptr);
+		if (leave_group(groups, r.user, id) == Failure) return_code(InvalidGroup);
 		
 		save_user_file(r.user);
-		
-		// look up group
-		auto pair_ptr = groups.find(id);
-		if (pair_ptr == groups.end()) {
-			printf("User '%s' had reference to missing group '%s'\n", r.user.username.c_str(), encode_group_id(id).c_str());
-			return_code(GroupLeft);
-		}
-		
-		auto member_ptr = std::find(pair_ptr->second.members.begin(), pair_ptr->second.members.end(), r.user.username);
-		if (member_ptr == pair_ptr->second.members.end()) {
-			printf("User '%s' was missing from group '%s' member list\n", r.user.username.c_str(), encode_group_id(id).c_str());
-			return_code(GroupLeft);
-		}
-		pair_ptr->second.members.erase(member_ptr);
-		
 		return_code(GroupLeft);
 	});
 	
 	
 	
+	int port;
+	let config_file = std::ifstream(CONFIG_FILE_NAME);
+	if (config_file.is_open()) {
+		config_file >> port;
+		if (config_file.fail()) {
+			printf("Couldn't read port from config file, resetting it to default.\n");
+			port = DEFAULT_SERVER_PORT;
+			(std::ofstream(CONFIG_FILE_NAME) << port).close();
+		}
+	} else {
+		printf("Config file not found, creating a new one.\n");
+		port = DEFAULT_SERVER_PORT;
+		(std::ofstream(CONFIG_FILE_NAME) << port).close();
+	}
+	
+	
 	let http_thread = std::thread([&]() {
 		printf("Starting server\n");
-		server.listen("0.0.0.0", SERVER_PORT);
+		server.listen("0.0.0.0", port);
 		printf("Exiting server\n");
 	});
 	
@@ -410,6 +430,8 @@ int main() {
 			for (std::pair<const GroupID, Group> pair : groups) {
 				printf("%s\n", pair.second.encode().c_str());
 			}
+		} else if (input == "cool") {
+			printf("👍\n");
 		}
 	}
 	

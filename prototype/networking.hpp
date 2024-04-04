@@ -4,6 +4,10 @@
 #include <string>
 
 
+#define DEFAULT_SERVER_PORT 7777
+#define DEFAULT_SERVER_HOSTNAME "localhost"
+
+
 enum ClientRequest {
 	Ping              = 0,
 	CreateAccount     = 1,

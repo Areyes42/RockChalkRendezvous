@@ -204,17 +204,18 @@ struct TimeAndDate {
 	inline u16 get_minute() const { return this->minute % 60; }
 	inline u16 get_hour() const { return this->minute / 60; }
 	
-	inline std::string encode() const { return TimeAndDate::encode(*this); }
-	static std::string encode(const TimeAndDate& td) {
+	static inline std::string encode_static(const TimeAndDate& td) { return td.encode(); }
+	std::string encode() const {
 		let s = std::ostringstream();
-		s << td.minute << " " << td.day << " " << td.year;
+		s << this->minute << " " << this->day << " " << this->year;
 		return s.str();
 	}
 	
-	static Status decode(std::istream& stream, TimeAndDate& td) {
+	static inline Status decode_static(std::istream& stream, TimeAndDate& td) { return td.decode(stream); }
+	Status decode(std::istream& stream) {
 		i32 minute, day, year;
 		if (stream >> minute && stream >> day && stream >> year) {
-			td = TimeAndDate::build(minute, day, year);
+			*this = TimeAndDate::build(minute, day, year);
 			return Success;
 		} else return Failure;
 	}
