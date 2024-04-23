@@ -12,8 +12,6 @@
 #include "core_utils.hpp"
 #include "timeanddate.hpp"
 
-
-
 enum RepeatType {
     NoRepeat = 'N',
     Daily    = 'D',
@@ -111,7 +109,6 @@ struct TimeBlock { // MARK: TimeBlock
         
         return oss.str();
     }
-    
 };
 
 // Each calendar consists of a list of TimeBlocks
@@ -179,6 +176,13 @@ struct Calendar { // MARK: Calendar
         });
     }
     
+    Status add_time(const TimeBlock& block) {
+        if (block.start < block.end) {
+            busy_times.push_back(block);
+            return Success;
+        }
+        return Failure;
+    }
     
     static inline std::string encode_static(const Calendar& calendar) { return calendar.encode(); }
     std::string encode() const {
