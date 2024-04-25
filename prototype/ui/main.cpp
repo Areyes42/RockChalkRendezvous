@@ -48,7 +48,7 @@ void draw_calendar(WINDOW *win, TimeAndDate start, Calendar my_cal, int scroll_o
             wattroff(win, COLOR_PAIR(is_busy ? 1 : 2));
         }
     }
-
+ 
 
     wrefresh(win);
 }
@@ -302,6 +302,7 @@ int main() {
                 break;
             case 'a':
                 startCalendar = startCalendar.add_days(-7);
+                
                 draw_calendar(calendar_win, startCalendar, myCalendar, 0);
                 wrefresh(calendar_win);
                 break;
