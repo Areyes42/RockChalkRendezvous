@@ -424,8 +424,8 @@ void on_resize() {
 
 
 
-int main() {
-    initscr();
+void transfer_to_calendar_editor() {
+    //initscr();
     noecho();
     cbreak();
     start_color();
@@ -821,8 +821,7 @@ int main() {
 
     delwin(calendar_window);
     delwin(interact_window);
-    endwin();
-    return 0;
+    //endwin();
 }
 
 
